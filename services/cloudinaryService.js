@@ -3,7 +3,7 @@ const fs = require('fs').promises;
 
 class CloudinaryService {
   /**
-   * Upload Excel file to Cloudinary
+   * Upload Excel file to Cloudinary from file path
    * @param {string} filePath - Local file path
    * @param {string} originalName - Original filename
    * @returns {Promise<Object>} Upload result
@@ -28,6 +28,46 @@ class CloudinaryService {
       };
     } catch (error) {
       console.error('Cloudinary upload error:', error);
+      throw new Error(`Failed to upload file to Cloudinary: ${error.message}`);
+    }
+  }
+
+  /**
+   * Upload Excel file to Cloudinary from buffer (Vercel compatible)
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} originalName - Original filename
+   * @returns {Promise<Object>} Upload result
+   */
+  async uploadExcelFileFromBuffer(fileBuffer, originalName) {
+    try {
+      return new Promise((resolve, reject) => {
+        cloudinary.uploader.upload_stream(
+          {
+            resource_type: 'raw', // For non-image files
+            folder: 'excel-analytics/files',
+            public_id: `${Date.now()}-${originalName.replace(/\.[^/.]+$/, "")}`, // Remove extension
+            use_filename: true,
+            unique_filename: true,
+            tags: ['excel', 'analytics']
+          },
+          (error, result) => {
+            if (error) {
+              console.error('Cloudinary upload error:', error);
+              reject(new Error(`Failed to upload file to Cloudinary: ${error.message}`));
+            } else {
+              resolve({
+                public_id: result.public_id,
+                url: result.secure_url,
+                bytes: result.bytes,
+                format: result.format,
+                created_at: result.created_at
+              });
+            }
+          }
+        ).end(fileBuffer);
+      });
+    } catch (error) {
+      console.error('Cloudinary upload from buffer error:', error);
       throw new Error(`Failed to upload file to Cloudinary: ${error.message}`);
     }
   }

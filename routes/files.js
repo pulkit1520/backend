@@ -12,26 +12,8 @@ const cloudinaryService = require('../services/cloudinaryService');
 
 const router = express.Router();
 
-// Configure multer for temporary file storage
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(__dirname, '../temp');
-    
-    // Ensure temp directory exists synchronously
-    try {
-      require('fs').mkdirSync(uploadPath, { recursive: true });
-      cb(null, uploadPath);
-    } catch (error) {
-      console.error('Error creating temp directory:', error);
-      cb(error);
-    }
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const extension = path.extname(file.originalname);
-    cb(null, `excel-${uniqueSuffix}${extension}`);
-  }
-});
+// Configure multer for memory storage (Vercel compatible)
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
   // Check file type
@@ -57,10 +39,10 @@ const upload = multer({
   }
 });
 
-// Helper function to analyze Excel file
-const analyzeExcelFile = async (filePath) => {
+// Helper function to analyze Excel file from buffer
+const analyzeExcelFile = async (fileBuffer) => {
   try {
-    const workbook = XLSX.readFile(filePath);
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
     const analysis = {
       sheetNames: workbook.SheetNames,
       sheets: {},
@@ -151,16 +133,26 @@ router.post('/upload',
   auth, 
   upload.single('file'),
   async (req, res) => {
-    let tempFilePath = null;
-    
     try {
-      if (!req.file) {
+      console.log('📁 File upload request received');
+      console.log('📁 User:', req.user.id, req.user.email);
+      console.log('📁 Body:', req.body);
+      console.log('📁 File info:', req.file ? {
+        originalname: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        buffer: req.file.buffer ? 'Buffer present' : 'No buffer'
+      } : 'No file');
+
+      if (!req.file || !req.file.buffer) {
+        console.log('❌ No file or buffer in request');
         return res.status(400).json({ message: 'No file uploaded' });
       }
 
-      const { originalname, filename, path: filePath, size, mimetype } = req.file;
+      const { originalname, size, mimetype, buffer } = req.file;
       const { description, tags, isPublic = false } = req.body;
-      tempFilePath = filePath;
+
+      console.log('📁 Processing file:', originalname, 'Size:', size, 'bytes');
 
       // Determine file type
       const extension = path.extname(originalname).toLowerCase();
@@ -168,15 +160,28 @@ router.post('/upload',
       if (extension === '.xls') fileType = 'xls';
       else if (extension === '.csv') fileType = 'csv';
 
-      // Upload to Cloudinary
-      const cloudinaryResult = await cloudinaryService.uploadExcelFile(filePath, originalname);
+      console.log('📁 File type determined:', fileType);
+
+      // Upload buffer directly to Cloudinary
+      console.log('☁️ Uploading to Cloudinary...');
+      let cloudinaryResult;
+      try {
+        cloudinaryResult = await cloudinaryService.uploadExcelFileFromBuffer(buffer, originalname);
+        console.log('☁️ Cloudinary upload successful:', cloudinaryResult.public_id);
+      } catch (cloudinaryError) {
+        console.error('☁️ Cloudinary upload failed:', cloudinaryError);
+        return res.status(500).json({ 
+          message: 'Failed to upload file to cloud storage',
+          error: cloudinaryError.message 
+        });
+      }
 
       // Create file record
       const fileRecord = new File({
         userId: req.user.id,
         originalName: originalname,
-        fileName: filename,
-        filePath,
+        fileName: `${Date.now()}-${originalname}`,
+        filePath: cloudinaryResult.url, // Use Cloudinary URL as filePath
         cloudinaryPublicId: cloudinaryResult.public_id,
         cloudinaryUrl: cloudinaryResult.url,
         fileSize: size,
@@ -192,7 +197,7 @@ router.post('/upload',
 
       // Analyze the file in the background
       try {
-        const analysis = await analyzeExcelFile(filePath);
+        const analysis = await analyzeExcelFile(buffer);
         
         // Update file record with analysis results
         fileRecord.sheetNames = analysis.sheetNames;
@@ -236,13 +241,6 @@ router.post('/upload',
         await fileRecord.save();
       }
 
-      // Clean up temporary file
-      try {
-        await fs.unlink(tempFilePath);
-      } catch (unlinkError) {
-        console.error('Failed to delete temporary file:', unlinkError);
-      }
-
       res.status(201).json({
         message: 'File uploaded successfully',
         file: {
@@ -261,18 +259,11 @@ router.post('/upload',
         }
       });
     } catch (error) {
-      console.error('Upload error:', error);
-      
-      // Clean up temporary file if there's an error
-      if (tempFilePath) {
-        try {
-          await fs.unlink(tempFilePath);
-        } catch (unlinkError) {
-          console.error('Failed to delete temporary file:', unlinkError);
-        }
-      }
-      
-      res.status(500).json({ message: 'Server error during file upload' });
+      console.error('❌ Upload error:', error);
+      res.status(500).json({ 
+        message: 'Server error during file upload',
+        error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      });
     }
   }
 );
