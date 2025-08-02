@@ -357,17 +357,19 @@ router.post('/create',
 // @access  Private
 router.get('/', auth, async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, type, status, favorite } = req.query;
+    console.log('📊 Analytics request received from user:', req.user.id);
+    const startTime = Date.now();
+    
+    const { page = 1, limit = 5, search, type, status, favorite } = req.query; // Reduced default limit
     const skip = (page - 1) * limit;
 
-    // Build query
+    // Build query with timeout protection
     const query = { userId: req.user.id };
     
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-        { tags: { $in: [new RegExp(search, 'i')] } }
+        { description: { $regex: search, $options: 'i' } }
       ];
     }
     
@@ -375,14 +377,20 @@ router.get('/', auth, async (req, res) => {
     if (status) query.status = status;
     if (favorite === 'true') query.isFavorite = true;
 
-    const analyses = await Analysis.find(query)
-      .sort({ updatedAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .populate('fileId', 'originalName fileType')
-      .select('-data.rawData -errors');
+    console.log('📊 Querying analyses with:', query);
 
-    const total = await Analysis.countDocuments(query);
+    // Simplified query without heavy populate operations
+    const [analyses, total] = await Promise.all([
+      Analysis.find(query)
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .select('name description type chartType status createdAt updatedAt processingTime isFavorite fileId')
+        .lean(), // Use lean() for better performance
+      Analysis.countDocuments(query)
+    ]);
+
+    console.log(`📊 Found ${analyses.length} analyses in ${Date.now() - startTime}ms`);
 
     // Add cache-busting headers
     res.set({
@@ -392,7 +400,11 @@ router.get('/', auth, async (req, res) => {
     });
 
     res.json({
-      analyses,
+      analyses: analyses.map(analysis => ({
+        ...analysis,
+        id: analysis._id,
+        _id: undefined // Clean up the response
+      })),
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / limit),
@@ -400,11 +412,15 @@ router.get('/', auth, async (req, res) => {
         hasNext: page * limit < total,
         hasPrev: page > 1
       },
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      processingTime: Date.now() - startTime
     });
   } catch (error) {
-    console.error('Get analyses error:', error);
-    res.status(500).json({ message: 'Server error fetching analyses' });
+    console.error('❌ Get analyses error:', error);
+    res.status(500).json({ 
+      message: 'Server error fetching analyses',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
   }
 });
 
