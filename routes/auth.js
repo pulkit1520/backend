@@ -144,28 +144,24 @@ router.post('/login', [
     // Update last login
     await user.updateLastLogin();
 
-    // Validate and fix user usage statistics if needed
-    const File = require('../models/File');
-    const actualFileCount = await File.countDocuments({ userId: user._id });
-    const storageAggregation = await File.aggregate([
-      { $match: { userId: user._id } },
-      { $group: { _id: null, totalStorage: { $sum: '$fileSize' } } }
-    ]);
-    const actualStorageUsed = storageAggregation.length > 0 ? storageAggregation[0].totalStorage : 0;
-
-    // If usage statistics are incorrect, fix them
-    if (user.usage.filesUploaded !== actualFileCount || user.usage.storageUsed !== actualStorageUsed) {
-      console.log(`🔧 Fixing usage statistics for user ${user.email}:`);
-      console.log(`   Files: ${user.usage.filesUploaded} → ${actualFileCount}`);
-      console.log(`   Storage: ${user.usage.storageUsed} → ${actualStorageUsed}`);
+    // Simple usage validation (avoid complex aggregation during login)
+    try {
+      const File = require('../models/File');
+      const actualFileCount = await File.countDocuments({ userId: user._id });
       
-      await User.findByIdAndUpdate(user._id, {
-        'usage.filesUploaded': actualFileCount,
-        'usage.storageUsed': actualStorageUsed
-      });
-      
-      user.usage.filesUploaded = actualFileCount;
-      user.usage.storageUsed = actualStorageUsed;
+      // Only fix file count if there's a major discrepancy (avoid storage calculation for now)
+      if (Math.abs(user.usage.filesUploaded - actualFileCount) > 0) {
+        console.log(`🔧 Fixing file count for user ${user.email}: ${user.usage.filesUploaded} → ${actualFileCount}`);
+        
+        await User.findByIdAndUpdate(user._id, {
+          'usage.filesUploaded': actualFileCount
+        });
+        
+        user.usage.filesUploaded = actualFileCount;
+      }
+    } catch (usageError) {
+      console.warn('⚠️ Could not validate usage statistics during login:', usageError.message);
+      // Continue with login even if usage validation fails
     }
 
     // Generate tokens
